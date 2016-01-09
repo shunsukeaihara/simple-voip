@@ -1,6 +1,7 @@
 package voip
 
 import (
+	"bytes"
 	"errors"
 )
 
@@ -18,6 +19,7 @@ type JoinMessage struct {
 type PingMessage struct {
 	*Packet
 	*Header
+	payload []byte
 }
 
 func NewJoinMessage(p *Packet, h *Header) (*JoinMessage, error) {
@@ -40,19 +42,36 @@ func (m *JoinMessage) Process(vs *VoIPServer) error {
 	if err != nil {
 		return err
 	}
-	vs.joinRoom(NewSession(rid, uid, m.Addr))
+	vs.JoinRoom(NewSession(rid, uid, m.Addr, vs.GetConn()))
 	return nil
 }
 
 func NewPingMessage(p *Packet, h *Header) (*PingMessage, error) {
-	m := &PingMessage{p, h}
-	return m, nil
+	m := &PingMessage{p, h, make([]byte, 0, 0)}
+	err := m.parse()
+	return m, err
 }
 
 func (m *PingMessage) parse() error {
+	if len(m.Data) < 11+int(m.BodySize) {
+		return errors.New("body size is too small in ping message")
+	}
+	m.payload = m.Data[11 : 11+int(m.BodySize)]
 	return nil
 }
 
+func (m *PingMessage) toPong() []byte {
+	var b bytes.Buffer
+	return b.Bytes()
+}
+
 func (m *PingMessage) Process(vs *VoIPServer) error {
+	s := vs.GetSession(m.Addr.String())
+	if s == nil {
+		return errors.New("not authed")
+	}
+	s.PingChan <- m
+	// send pong
+	// room := s.GetRoom()
 	return nil
 }

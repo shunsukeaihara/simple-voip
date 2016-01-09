@@ -107,26 +107,50 @@ func (vs *VoIPServer) CheckJoinKey(key []byte) (int, int, error) {
 	return vs.redisCli.CheckJoinKey(key)
 }
 
-// sessionを部屋に結びつける
-func (vs *VoIPServer) joinRoom(s *Session) {
-	addrStr := s.Addr.String()
+func (vs *VoIPServer) GetConn() *net.UDPConn {
+	return vs.conn
+}
+
+func (vs *VoIPServer) GetSession(addrStr string) *Session {
 	vs.sessionM.RLock()
-	_, ok := vs.sessions[addrStr]
-	vs.sessionM.RUnlock()
-	if ok {
-		// already joined
+	defer vs.sessionM.RUnlock()
+	if session, ok := vs.sessions[addrStr]; ok {
+		return session
+	}
+	return nil
+}
+
+func (vs *VoIPServer) GetRoom(roomId int) *Room {
+	vs.roomM.RLock()
+	defer vs.roomM.RUnlock()
+	if room, ok := vs.rooms[roomId]; ok {
+		return room
+	}
+	return nil
+}
+
+func (vs *VoIPServer) GetOrCreateRoom(roomId int) (*Room, bool) {
+	vs.roomM.Lock()
+	defer vs.roomM.Unlock()
+	if room, ok := vs.rooms[roomId]; ok {
+		return room, false
+	} else {
+		room = NewRoom(vs, roomId)
+		vs.rooms[roomId] = room
+		log.Infof("create %v", room)
+		return room, true
+	}
+}
+
+// sessionを部屋に結びつける
+func (vs *VoIPServer) JoinRoom(s *Session) {
+	addrStr := s.Addr.String()
+
+	if ses := vs.GetSession(addrStr); ses != nil {
+		log.Info("session already exits")
 		return
 	}
-	vs.roomM.RLock()
-	room, ok := vs.rooms[s.RoomId]
-	vs.roomM.RUnlock()
-	if !ok {
-		// create room
-		room = NewRoom(vs, s.RoomId)
-		vs.roomM.Lock()
-		vs.rooms[s.RoomId] = room
-		vs.roomM.Unlock()
-	}
+	room, _ := vs.GetOrCreateRoom(s.RoomId)
 	// join to room
 	err := room.JoinRoom(s)
 	if err == nil {
@@ -134,5 +158,7 @@ func (vs *VoIPServer) joinRoom(s *Session) {
 		vs.sessionM.Lock()
 		vs.sessions[addrStr] = s
 		vs.sessionM.Unlock()
+	} else {
+		log.Error(err)
 	}
 }
