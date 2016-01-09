@@ -10,9 +10,13 @@ import (
 type VoIPServer struct {
 	conn         *net.UDPConn
 	packetChan   chan *Packet
-	mu           *sync.RWMutex
 	wg           *sync.WaitGroup
 	shutdownChan chan struct{}
+	redisCli     *RedisCli
+	sessions     map[string]*Session
+	sessionM     sync.RWMutex
+	rooms        map[int]*Room
+	roomM        sync.RWMutex
 }
 
 func NewVoIPServer(addr string, numLoop int) (*VoIPServer, error) {
@@ -26,10 +30,14 @@ func NewVoIPServer(addr string, numLoop int) (*VoIPServer, error) {
 	}
 	vs := VoIPServer{
 		conn:         conn,
-		packetChan:   make(chan *Packet, 10000),
-		mu:           new(sync.RWMutex),
+		packetChan:   make(chan *Packet, 100000),
 		wg:           new(sync.WaitGroup),
 		shutdownChan: make(chan struct{}),
+		redisCli:     NewRedisClient("", 0),
+		sessions:     make(map[string]*Session),
+		sessionM:     sync.RWMutex{},
+		rooms:        make(map[int]*Room),
+		roomM:        sync.RWMutex{},
 	}
 	go vs.readLoop()
 	for i := 0; i < numLoop; i++ {
@@ -85,12 +93,46 @@ func (vs *VoIPServer) analyzeLoop() {
 				// errorの場合は無視
 				continue
 			}
-			msg.Process() // Message毎の処理を実施
+			msg.Process(vs) // Message毎の処理を実施
 		case _, ok := <-vs.shutdownChan:
 			if !ok {
 				log.Info("shutdown analyze loop")
 				return
 			}
 		}
+	}
+}
+
+func (vs *VoIPServer) CheckJoinKey(key []byte) (int, int, error) {
+	return vs.redisCli.CheckJoinKey(key)
+}
+
+// sessionを部屋に結びつける
+func (vs *VoIPServer) joinRoom(s *Session) {
+	addrStr := s.Addr.String()
+	vs.sessionM.RLock()
+	_, ok := vs.sessions[addrStr]
+	vs.sessionM.RUnlock()
+	if ok {
+		// already joined
+		return
+	}
+	vs.roomM.RLock()
+	room, ok := vs.rooms[s.RoomId]
+	vs.roomM.RUnlock()
+	if !ok {
+		// create room
+		room = NewRoom(vs, s.RoomId)
+		vs.roomM.Lock()
+		vs.rooms[s.RoomId] = room
+		vs.roomM.Unlock()
+	}
+	// join to room
+	err := room.JoinRoom(s)
+	if err == nil {
+		// add to session
+		vs.sessionM.Lock()
+		vs.sessions[addrStr] = s
+		vs.sessionM.Unlock()
 	}
 }
